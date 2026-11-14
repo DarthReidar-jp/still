@@ -6,6 +6,14 @@
 
 開いて鍵を押す（または ⌃⌥⌘L）とロックされ、画面に「ロック中」が出ます。もう一度 ⌃⌥⌘L で解除します。時間制限はありません。
 
+<p align="center">
+  <img src="docs/window.png" width="260" alt="メインウィンドウ">
+</p>
+
+<p align="center">
+  <img src="docs/locked.png" width="720" alt="ロック中の画面">
+</p>
+
 ## 動作環境
 
 - macOS 26 以降（Liquid Glass を使うため）

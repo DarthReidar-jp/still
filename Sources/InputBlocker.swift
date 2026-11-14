@@ -82,7 +82,9 @@ final class InputBlocker: @unchecked Sendable {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if isActive, let blockTap {
                 CGEvent.tapEnable(tap: blockTap, enable: true)
-                leaks["tap-disabled", default: 0] += 1
+                // 準備時に自分で無効化した通知（ByUserInput）が遅れて届くことがあるので、
+                // 応答が遅れて OS に外されたときだけを記録する
+                if type == .tapDisabledByTimeout { leaks["tap-timeout", default: 0] += 1 }
             }
             return Unmanaged.passUnretained(event)
         }
