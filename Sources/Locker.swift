@@ -98,7 +98,8 @@ final class Locker {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.ignoresMouseEvents = true
+        // タップをすり抜けたクリックやタッチを、後ろのアプリに届かせずにここで受け止める
+        window.ignoresMouseEvents = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
         let blur = NSVisualEffectView()

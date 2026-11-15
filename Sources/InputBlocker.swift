@@ -3,7 +3,10 @@ import Foundation
 import Synchronization
 import Carbon.HIToolbox
 
-/// 有効な間、キーボードとトラックパッドの入力を HID レベルですべて捨てる。
+/// 有効な間、キーボード、トラックパッド、タッチスクリーンの入力をすべて捨てる。
+///
+/// HID レベルのタップで元の入力を捨て、セッションレベルのタップで
+/// WindowServer があとから作る入力（タッチから作るジェスチャーなど）を捨てる。
 ///
 /// タップは専用スレッドで動かす。メインスレッドが描画などで詰まって応答が遅れると、
 /// macOS はタップを無効化し、その間の入力が素通りしてしまうため。
@@ -17,33 +20,27 @@ final class InputBlocker: @unchecked Sendable {
     var onKeyBlocked: @MainActor () -> Void = {}
 
     private let active = Atomic<Bool>(false)
-    private var blockTap: CFMachPort?
+    private var blockTaps: [CFMachPort] = []
     private var watchTap: CFMachPort?
     private var runLoop: CFRunLoop?
     // 以下はタップのスレッドからだけ触る
     private var leaks: [String: Int] = [:]
 
-    private static let mask: CGEventMask = [
-        1, 2, 3, 4, 5, 6, 7,        // マウスのクリック・移動・ドラッグ
-        10, 11, 12,                 // keyDown / keyUp / flagsChanged
-        14,                         // systemDefined（音量・明るさなど）
-        18, 19, 20, 22,             // rotate / beginGesture / endGesture / scrollWheel
-        25, 26, 27,                 // その他のボタン
-        29, 30, 31, 32, 34,         // gesture / magnify / swipe / smartMagnify / pressure
-    ].reduce(0) { $0 | (1 << $1) }
+    /// すべての種類のイベント。タッチ（directTouch など）は macOS ごとに種類が増えるので、列挙せずに全部を対象にする。
+    private static let mask = CGEventMask.max
 
     /// 有効化する。権限がなくタップを張れなければ false。
     func start() -> Bool {
-        guard prepare(), let blockTap else { return false }
+        guard prepare() else { return false }
         active.store(true, ordering: .sequentiallyConsistent)
-        CGEvent.tapEnable(tap: blockTap, enable: true)
+        blockTaps.forEach { CGEvent.tapEnable(tap: $0, enable: true) }
         if let watchTap { CGEvent.tapEnable(tap: watchTap, enable: true) }
         return true
     }
 
     func stop() {
         active.store(false, ordering: .sequentiallyConsistent)
-        if let blockTap { CGEvent.tapEnable(tap: blockTap, enable: false) }
+        blockTaps.forEach { CGEvent.tapEnable(tap: $0, enable: false) }
         if let watchTap { CGEvent.tapEnable(tap: watchTap, enable: false) }
         if let runLoop {
             CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) { [self] in flushLeaks() }
@@ -54,17 +51,19 @@ final class InputBlocker: @unchecked Sendable {
     // MARK: - Tap thread
 
     private func prepare() -> Bool {
-        if blockTap != nil { return true }
+        if !blockTaps.isEmpty { return true }
         let ready = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in
             let info = Unmanaged.passUnretained(self).toOpaque()
-            blockTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                         eventsOfInterest: Self.mask, callback: blockCallback, userInfo: info)
-            guard let blockTap else { ready.signal(); return }
+            blockTaps = [CGEventTapLocation.cghidEventTap, .cgSessionEventTap].compactMap {
+                CGEvent.tapCreate(tap: $0, place: .headInsertEventTap, options: .defaultTap,
+                                  eventsOfInterest: Self.mask, callback: blockCallback, userInfo: info)
+            }
+            guard blockTaps.count == 2 else { blockTaps = []; ready.signal(); return }
             watchTap = CGEvent.tapCreate(tap: .cgAnnotatedSessionEventTap, place: .tailAppendEventTap, options: .listenOnly,
                                          eventsOfInterest: Self.mask, callback: watchCallback, userInfo: info)
             runLoop = CFRunLoopGetCurrent()
-            for tap in [blockTap, watchTap].compactMap({ $0 }) {
+            for tap in blockTaps + [watchTap].compactMap({ $0 }) {
                 CGEvent.tapEnable(tap: tap, enable: false)
                 CFRunLoopAddSource(runLoop, CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
             }
@@ -75,13 +74,14 @@ final class InputBlocker: @unchecked Sendable {
         thread.qualityOfService = .userInteractive
         thread.start()
         ready.wait()
-        return blockTap != nil
+        return !blockTaps.isEmpty
     }
 
     fileprivate func block(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if isActive, let blockTap {
-                CGEvent.tapEnable(tap: blockTap, enable: true)
+            if isActive {
+                // どのタップが外れたかはコールバックから分からないので、両方を有効にし直す
+                blockTaps.forEach { CGEvent.tapEnable(tap: $0, enable: true) }
                 // 準備時に自分で無効化した通知（ByUserInput）が遅れて届くことがあるので、
                 // 応答が遅れて OS に外されたときだけを記録する
                 if type == .tapDisabledByTimeout { leaks["tap-timeout", default: 0] += 1 }
