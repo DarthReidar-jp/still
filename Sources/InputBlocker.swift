@@ -109,13 +109,17 @@ final class InputBlocker: @unchecked Sendable {
             if isActive, let watchTap { CGEvent.tapEnable(tap: watchTap, enable: true) }
             return
         }
-        guard isActive else { return }
+        guard isActive, !Self.windowServerNotices.contains(type.rawValue) else { return }
         var name = "type\(type.rawValue)"
         if type == .keyDown || type == .keyUp {
             name += "(key\(event.getIntegerValueField(.keyboardEventKeycode)))"
         }
         leaks[name, default: 0] += 1
     }
+
+    /// WindowServer がアプリに出す通知。ロック中の画面を出すと届くが、人の入力ではないので記録しない。
+    /// mouseEntered / mouseExited / appKitDefined / applicationDefined / periodic / cursorUpdate / 21（名前のない種類）
+    private static let windowServerNotices: Set<UInt32> = [8, 9, 13, 15, 16, 17, 21]
 
     private var isActive: Bool { active.load(ordering: .relaxed) }
 
